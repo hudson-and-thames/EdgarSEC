@@ -6,9 +6,11 @@ class CIK:
         """
         Verify if the CIK is valid.
 
+        :raises ValueError: If the CIK is invalid.
+
         """
         if not self.cik.isdigit() or len(self.cik) != 10:
-            raise ValueError("Invalid CIK. CIK should be a 10-digit number.")
+            raise ValueError("CIK should be a 10-digit number.")
 
     def __str__(self):
         return self.cik
