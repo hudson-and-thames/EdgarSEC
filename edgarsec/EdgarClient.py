@@ -5,7 +5,7 @@ from ratelimit import limits, sleep_and_retry
 from edgarsec.models import CIK, Period
 import logging
 from edgarsec.errors import RequestFailedException, InvalidCIKException
-from edgarsec.utils import _download_with_progress, _unzip_file
+from edgarsec.utils import _download_file, _unzip_file
 from pathlib import Path
 
 
@@ -116,17 +116,21 @@ class EdgarClient:
             self.logger.error(f"Failed request with code: {response.status_code}")
             raise RequestFailedException(f"Failed request with code: {response.status_code}")
 
-    def download_company_facts(self, file_path: str | Path, unzip: bool = False) -> None:
-        url = f"{self.ARCHIVES_URL}/xbrl/companyfacts.zip"
+    def __download_file__(self, url: str, file_path: str | Path, unzip: bool = False) -> None:
         file_path = Path(file_path)
         self.logger.info(f"Downloading file from: {url}")
         response = self._make_request(url=url, stream=True)
         self.logger.info(f"Download and Save  file to: {file_path.absolute()}")
-        _download_with_progress(response, file_path=file_path)
+        _download_file(response, file_path=file_path)
 
         if unzip:
             self.logger.info(f"Unzipping file to: {file_path.parent}")
             _unzip_file(file_path=file_path, extract_to=file_path.parent)
 
-    def download_filing_history(self, file_path):
-        pass
+    def download_company_facts(self, file_path: str | Path, unzip: bool = False) -> None:
+        url = f"{self.ARCHIVES_URL}/xbrl/companyfacts.zip"
+        self.__download_file__(url=url, file_path=file_path, unzip=unzip)
+
+    def download_filing_history(self, file_path: str | Path, unzip: bool = False) -> None:
+        url = f"{self.ARCHIVES_URL}/bulkdata/submissions.zip"
+        self.__download_file__(url=url, file_path=file_path, unzip=unzip)
