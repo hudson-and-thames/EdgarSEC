@@ -4,7 +4,7 @@ from pathlib import Path
 import zipfile
 
 
-def _download_with_progress(response: Response, file_path: Path) -> None:
+def _download_file(response: Response, file_path: Path) -> None:
     total_size = int(response.headers.get('content-length', 0))
 
     if not file_path.parent.exists():
@@ -23,10 +23,12 @@ def _unzip_file(file_path: Path, extract_to: str | Path) -> None:
 
     extract_to = Path(extract_to)
 
+    dir_extraction = extract_to / file_path.stem
+
     if zipfile.is_zipfile(file_path):
         try:
             with zipfile.ZipFile(file_path, 'r') as zip_ref:
-                zip_ref.extractall(extract_to)
+                zip_ref.extractall(dir_extraction)
         except (OSError, zipfile.BadZipFile) as err:
             raise ValueError(f"Unzip failed with error: {err}")
     else:
