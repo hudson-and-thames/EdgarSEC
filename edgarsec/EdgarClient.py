@@ -1,41 +1,84 @@
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, LiteralString, Literal
 import requests
+import certifi
+import ssl
+import aiofiles
+
+from aiohttp import ClientResponse
 from ratelimit import limits, sleep_and_retry
+from tqdm import tqdm
+
 from edgarsec.models import CIK, Period
 import logging
 from edgarsec.errors import RequestFailedException, InvalidCIKException
 from edgarsec.utils import _download_file, _unzip_file
 from pathlib import Path
+import aiohttp
+import asyncio
 
 
 class EdgarClient:
-    BASE_URL = "https://data.sec.gov"
-    ARCHIVES_URL = "https://www.sec.gov/Archives/edgar/daily-index"
+    DATA_URL = "https://data.sec.gov"
+    BASE_URL = "https://www.sec.gov"
     USER_AGENT = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) "
-                  "Version/17.5 Safari/605.1.15")  # TODO: should be change
+                  "Version/17.5 Safari/605.1.15")  # TODO: should be changed
     MAX_CALLS_PER_SECOND = 10
 
     def __init__(self, user_agent: Optional[str] = None, logger: Optional[logging.Logger] = None):
-        self.session = requests.Session()
+        self.session = aiohttp.ClientSession(
+            headers={'User-Agent': self.USER_AGENT, 'Accept': 'application/json', 'Connection': 'keep-alive'}, )
         self.USER_AGENT = user_agent or self.USER_AGENT
-        self.session.headers.update({'User-Agent': self.USER_AGENT})
         self.logger = logger or logging.getLogger(__name__)
 
-    def __exit__(self, exc_type, exc_value, traceback):
+    def __exit__(self, exc_type, exc_val, exc_tb):
         self.session.close()
+
+    async def close(self):
+        await self.session.close()
 
     @sleep_and_retry
     @limits(calls=MAX_CALLS_PER_SECOND, period=1)
-    def _make_request(self, url: str, params: Optional[Dict[str, Any]] = None,
-                      stream: Optional[bool] = None) -> requests.Response:
+    async def _make_request(self, url: str, params: Optional[Dict[str, Any]] = None,
+                            stream: Optional[bool] = None) -> bytes:
         try:
-            response = self.session.get(url, params=params, stream=stream)
-            response.raise_for_status()
-            return response
-        except requests.exceptions.HTTPError as err:
+            async with self.session.get(url, ssl=ssl.create_default_context(cafile=certifi.where())) as response:
+                response.raise_for_status()
+                return await response.read()
+        except aiohttp.ClientError as err:
             self.logger.error(f"Request failed with error: {err}")
             raise RequestFailedException(f"Request failed with error: {err}")
+
+    async def _download_file(self, url: str, file_path: str | Path, unzip: bool = False) -> None:
+
+        file_path = Path(file_path)
+        if not file_path.parent.exists():
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+        self.logger.info(f"Downloading file from: {url}")
+        chunk_size = 1024
+
+        try:
+            async with self.session.get(url, ssl=ssl.create_default_context(cafile=certifi.where())) as response:
+                response.raise_for_status()
+                total_size = int(response.headers.get('content-length', 0))
+                with tqdm(total=total_size, unit='B', unit_scale=True, desc='Downloading File') as pbar:
+                    async with aiofiles.open(file_path, mode='wb') as file:
+                        async for chunk in response.content.iter_chunked(chunk_size):
+                            await file.write(chunk)
+                            pbar.update(len(chunk))
+
+        except aiohttp.ClientError as err:
+            self.logger.error(f"Request failed with error: {err}")
+            raise RequestFailedException(f"Request failed with error: {err}")
+        except  Exception as e:
+            self.logger.error(f"Failed to download file: {e}")
+            raise ValueError(f"Failed to download file: {e}")
+
+        self.logger.info(f"Download and Save  file to: {file_path.absolute()}")
+
+        if unzip:
+            self.logger.info(f"Unzipping file to: {file_path.parent}")
+            _unzip_file(file_path=file_path, extract_to=file_path.parent)
 
     def _parse_response_json(self, content: bytes) -> Dict[str, Any]:
         try:
@@ -44,7 +87,7 @@ class EdgarClient:
             self.logger.error(f"Failed to parse JSON response: {e}")
             raise ValueError(f"Failed to parse JSON response: {e}")
 
-    def get_company_filings(self, cik: str) -> Dict[str, Any]:
+    async def get_company_filings(self, cik: str) -> Dict[str, Any]:
         cik_obj = CIK(cik)
         try:
             cik_obj.verify_cik()
@@ -52,17 +95,13 @@ class EdgarClient:
             self.logger.error(f"Invalid CIK: {e}")
             raise InvalidCIKException(f"Invalid CIK: {e}")
 
-        url = f"{self.BASE_URL}/submissions/CIK{cik_obj}.json"
+        url = f"{self.DATA_URL}/submissions/CIK{cik_obj}.json"
         self.logger.info(f"Making request to: {url}")
-        response = self._make_request(url)
+        response = await self._make_request(url)
+        return self._parse_response_json(response)
 
-        if response.status_code == 200:
-            return self._parse_response_json(response.content)
-        else:
-            self.logger.error(f"Failed request with code: {response.status_code}")
-            raise RequestFailedException(f"Failed request with code: {response.status_code}")
-
-    def get_company_concept(self, cik: str) -> Dict[str, Any]:
+    async def get_company_concept(self, cik: str, taxonomy: Literal["us-gaap",] = "us-gaap",
+                                  tag: Literal["AccountsPayableCurrent"] = "AccountsPayableCurrent") -> Dict[str, Any]:
         cik_obj = CIK(cik)
         try:
             cik_obj.verify_cik()
@@ -70,17 +109,13 @@ class EdgarClient:
             self.logger.error(f"Invalid CIK: {e}")
             raise InvalidCIKException(f"Invalid CIK: {e}")
 
-        url = f"{self.BASE_URL}/api/xbrl/companyconcept/CIK{cik_obj}/us-gaap/AccountsPayableCurrent.json"
+        url = f"{self.DATA_URL}/api/xbrl/companyconcept/CIK{cik_obj}/{taxonomy}/{tag}.json"
         self.logger.info(f"Making request to: {url}")
-        response = self._make_request(url)
+        response = await self._make_request(url)
 
-        if response.status_code == 200:
-            return self._parse_response_json(response.content)
-        else:
-            self.logger.error(f"Failed request with code: {response.status_code}")
-            raise RequestFailedException(f"Failed request with code: {response.status_code}")
+        return self._parse_response_json(response)
 
-    def get_company_facts(self, cik: str) -> Dict[str, Any]:
+    async def get_company_facts(self, cik: str) -> Dict[str, Any]:
         cik_obj = CIK(cik)
         try:
             cik_obj.verify_cik()
@@ -88,17 +123,13 @@ class EdgarClient:
             self.logger.error(f"Invalid CIK: {e}")
             raise InvalidCIKException(f"Invalid CIK: {e}")
 
-        url = f"{self.BASE_URL}/api/xbrl/companyfacts/CIK{cik_obj}.json"
+        url = f"{self.DATA_URL}/api/xbrl/companyfacts/CIK{cik_obj}.json"
         self.logger.info(f"Making request to: {url}")
-        response = self._make_request(url)
+        response = await self._make_request(url)
 
-        if response.status_code == 200:
-            return self._parse_response_json(response.content)
-        else:
-            self.logger.error(f"Failed request with code: {response.status_code}")
-            raise RequestFailedException(f"Failed request with code: {response.status_code}")
+        return self._parse_response_json(response)
 
-    def get_frames(self, period: str) -> Dict[str, Any]:
+    async def get_frames(self, period: str) -> Dict[str, Any]:
         period_obj = Period(period)
         try:
             period_obj.is_valid()
@@ -106,31 +137,33 @@ class EdgarClient:
             self.logger.error(f"Invalid period: {e}")
             raise ValueError(f"Invalid period: {e}")
 
-        url = f"{self.BASE_URL}/api/xbrl/frames/us-gaap/AccountsPayableCurrent/USD/{period_obj}.json"
+        url = f"{self.DATA_URL}/api/xbrl/frames/us-gaap/AccountsPayableCurrent/USD/{period_obj}.json"
         self.logger.info(f"Making request to: {url}")
-        response = self._make_request(url)
+        response = await self._make_request(url)
 
-        if response.status_code == 200:
-            return self._parse_response_json(response.content)
-        else:
-            self.logger.error(f"Failed request with code: {response.status_code}")
-            raise RequestFailedException(f"Failed request with code: {response.status_code}")
+        return self._parse_response_json(response)
 
-    def __download_file__(self, url: str, file_path: str | Path, unzip: bool = False) -> None:
-        file_path = Path(file_path)
-        self.logger.info(f"Downloading file from: {url}")
-        response = self._make_request(url=url, stream=True)
-        self.logger.info(f"Download and Save  file to: {file_path.absolute()}")
-        _download_file(response, file_path=file_path)
+    async def download_company_facts(self, file_path: str | Path, unzip: bool = False) -> None:
+        url = f"{self.BASE_URL}/Archives/edgar/daily-index/xbrl/companyfacts.zip"
+        await self._download_file(url=url, file_path=file_path, unzip=unzip)
 
-        if unzip:
-            self.logger.info(f"Unzipping file to: {file_path.parent}")
-            _unzip_file(file_path=file_path, extract_to=file_path.parent)
+    async def download_filing_history(self, file_path: str | Path, unzip: bool = False) -> None:
+        url = f"{self.BASE_URL}/Archives/edgar/daily-index/bulkdata/submissions.zip"
+        await self._download_file(url=url, file_path=file_path, unzip=unzip)
 
-    def download_company_facts(self, file_path: str | Path, unzip: bool = False) -> None:
-        url = f"{self.ARCHIVES_URL}/xbrl/companyfacts.zip"
-        self.__download_file__(url=url, file_path=file_path, unzip=unzip)
+    async def company_tickers(self) -> Dict[str, Any]:
+        url = f"{self.BASE_URL}/files/company_tickers.json"
+        self.logger.info(f"Making request to: {url}")
+        response = await self._make_request(url)
+        return self._parse_response_json(response)
 
-    def download_filing_history(self, file_path: str | Path, unzip: bool = False) -> None:
-        url = f"{self.ARCHIVES_URL}/bulkdata/submissions.zip"
-        self.__download_file__(url=url, file_path=file_path, unzip=unzip)
+    async def get_ash_file(self, cik: str, ) -> None:
+        cik_obj = CIK(cik)
+        try:
+            cik_obj.verify_cik()
+        except ValueError as e:
+            self.logger.error(f"Invalid CIK: {e}")
+            raise InvalidCIKException(f"Invalid CIK: {e}")
+
+        url = f"{self.BASE_URL}/Archives/edgar/daily-index/{cik_obj}/sub.txt"
+        await self._download_file(url=url, file_path=file_path, unzip=unzip)

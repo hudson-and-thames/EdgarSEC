@@ -1,11 +1,12 @@
 from edgarsec import EdgarClient
 import json
+import yfinance as yf
 
 
 async def main():
     client = EdgarClient()
-    filings = await client.get_frames('CY2024Q2I')
-    print(json.dumps(filings, indent=4))
+    filings = await client.company_tickers()  # Example CIK
+    print(json.dumps(filings, indent=4))  # Handle the response as needed
     await client.close()
 
 
