@@ -1,22 +1,18 @@
 import json
 from typing import Dict, Any, Optional, LiteralString, Literal
-import requests
-import certifi
-import ssl
 import aiofiles
-
-from aiohttp import ClientResponse
+from aiohttp import ClientSession, TCPConnector, ClientTimeout
 from ratelimit import limits, sleep_and_retry
 from tqdm import tqdm
-
 from edgarsec.models import CIK, Period
 import logging
 from edgarsec.errors import RequestFailedException, InvalidCIKException
 from edgarsec.utils import _download_file, _unzip_file
 from pathlib import Path
 import aiohttp
-import asyncio
 
+
+type taxonomies = Literal["us-gaap", "ifrs-full", "dei", "srt"]
 
 class EdgarClient:
     DATA_URL = "https://data.sec.gov"
@@ -26,12 +22,17 @@ class EdgarClient:
     MAX_CALLS_PER_SECOND = 10
 
     def __init__(self, user_agent: Optional[str] = None, logger: Optional[logging.Logger] = None):
-        self.session = aiohttp.ClientSession(
-            headers={'User-Agent': self.USER_AGENT, 'Accept': 'application/json', 'Connection': 'keep-alive'}, )
         self.USER_AGENT = user_agent or self.USER_AGENT
         self.logger = logger or logging.getLogger(__name__)
+        self.session = None
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    async def connect(self):
+        self.session = ClientSession(
+            connector=TCPConnector(ssl=False),
+            timeout=ClientTimeout(total=30),
+            headers={'User-Agent': self.USER_AGENT, 'Accept': 'application/json', 'Connection': 'keep-alive'}, )
+
+    def __aexit__(self, exc_type, exc_val, exc_tb):
         self.session.close()
 
     async def close(self):
@@ -40,11 +41,11 @@ class EdgarClient:
     @sleep_and_retry
     @limits(calls=MAX_CALLS_PER_SECOND, period=1)
     async def _make_request(self, url: str, params: Optional[Dict[str, Any]] = None,
-                            stream: Optional[bool] = None) -> bytes:
+                            stream: Optional[bool] = None) -> Dict[str, Any]:
         try:
-            async with self.session.get(url, ssl=ssl.create_default_context(cafile=certifi.where())) as response:
+            async with self.session.get(url) as response:
                 response.raise_for_status()
-                return await response.read()
+                return await response.json()
         except aiohttp.ClientError as err:
             self.logger.error(f"Request failed with error: {err}")
             raise RequestFailedException(f"Request failed with error: {err}")
@@ -58,7 +59,7 @@ class EdgarClient:
         chunk_size = 1024
 
         try:
-            async with self.session.get(url, ssl=ssl.create_default_context(cafile=certifi.where())) as response:
+            async with self.session.get(url) as response:
                 response.raise_for_status()
                 total_size = int(response.headers.get('content-length', 0))
                 with tqdm(total=total_size, unit='B', unit_scale=True, desc='Downloading File') as pbar:
@@ -98,10 +99,10 @@ class EdgarClient:
         url = f"{self.DATA_URL}/submissions/CIK{cik_obj}.json"
         self.logger.info(f"Making request to: {url}")
         response = await self._make_request(url)
-        return self._parse_response_json(response)
+        return response
 
-    async def get_company_concept(self, cik: str, taxonomy: Literal["us-gaap",] = "us-gaap",
-                                  tag: Literal["AccountsPayableCurrent"] = "AccountsPayableCurrent") -> Dict[str, Any]:
+    async def get_company_concept(self, cik: str, taxonomy: taxonomies,
+                                  tag: str) -> Dict[str, Any]:
         cik_obj = CIK(cik)
         try:
             cik_obj.verify_cik()
@@ -112,8 +113,7 @@ class EdgarClient:
         url = f"{self.DATA_URL}/api/xbrl/companyconcept/CIK{cik_obj}/{taxonomy}/{tag}.json"
         self.logger.info(f"Making request to: {url}")
         response = await self._make_request(url)
-
-        return self._parse_response_json(response)
+        return response
 
     async def get_company_facts(self, cik: str) -> Dict[str, Any]:
         cik_obj = CIK(cik)
@@ -127,9 +127,9 @@ class EdgarClient:
         self.logger.info(f"Making request to: {url}")
         response = await self._make_request(url)
 
-        return self._parse_response_json(response)
+        return response
 
-    async def get_frames(self, period: str) -> Dict[str, Any]:
+    async def get_frames(self, period: str, taxonomy: taxonomies, tag:str, currency:str) -> Dict[str, Any]:
         period_obj = Period(period)
         try:
             period_obj.is_valid()
@@ -137,11 +137,11 @@ class EdgarClient:
             self.logger.error(f"Invalid period: {e}")
             raise ValueError(f"Invalid period: {e}")
 
-        url = f"{self.DATA_URL}/api/xbrl/frames/us-gaap/AccountsPayableCurrent/USD/{period_obj}.json"
+        url = f"{self.DATA_URL}/api/xbrl/frames/{taxonomy}/{tag}/{currency}/{period_obj}.json"
         self.logger.info(f"Making request to: {url}")
         response = await self._make_request(url)
 
-        return self._parse_response_json(response)
+        return response
 
     async def download_company_facts(self, file_path: str | Path, unzip: bool = False) -> None:
         url = f"{self.BASE_URL}/Archives/edgar/daily-index/xbrl/companyfacts.zip"
@@ -155,15 +155,4 @@ class EdgarClient:
         url = f"{self.BASE_URL}/files/company_tickers.json"
         self.logger.info(f"Making request to: {url}")
         response = await self._make_request(url)
-        return self._parse_response_json(response)
-
-    async def get_ash_file(self, cik: str, ) -> None:
-        cik_obj = CIK(cik)
-        try:
-            cik_obj.verify_cik()
-        except ValueError as e:
-            self.logger.error(f"Invalid CIK: {e}")
-            raise InvalidCIKException(f"Invalid CIK: {e}")
-
-        url = f"{self.BASE_URL}/Archives/edgar/daily-index/{cik_obj}/sub.txt"
-        await self._download_file(url=url, file_path=file_path, unzip=unzip)
+        return response

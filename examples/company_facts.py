@@ -4,6 +4,7 @@ import json
 
 async def main():
     client = EdgarClient()
+    await client.connect()
     filings = await client.get_company_facts('0000320193')  # Example CIK
     print(json.dumps(filings, indent=4))  # Handle the response as needed
     await client.close()

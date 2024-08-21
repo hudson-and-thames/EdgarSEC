@@ -5,7 +5,8 @@ import yfinance as yf
 
 async def main():
     client = EdgarClient()
-    filings = await client.company_tickers()  # Example CIK
+    await client.connect()
+    filings = await client.company_tickers()
     print(json.dumps(filings, indent=4))  # Handle the response as needed
     await client.close()
 
@@ -13,5 +14,4 @@ async def main():
 # Run the example
 if __name__ == "__main__":
     import asyncio
-
     asyncio.run(main())

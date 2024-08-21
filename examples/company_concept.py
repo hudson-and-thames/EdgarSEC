@@ -1,9 +1,12 @@
 from edgarsec import EdgarClient
 import json
 
+client = EdgarClient()
+
+
 async def main():
-    client = EdgarClient()
-    filings = await client.get_company_concept('0000320193')  # Example CIK
+    await client.connect()
+    filings = await client.get_company_concept(cik='0000320193', taxonomy='us-gaap', tag="AccountsPayableCurrent")  # Example CIK
     print(json.dumps(filings, indent=4))  # Handle the response as needed
     await client.close()
 

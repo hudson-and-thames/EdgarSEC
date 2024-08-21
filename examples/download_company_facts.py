@@ -3,8 +3,8 @@ from edgarsec import EdgarClient
 
 async def main():
     client = EdgarClient()
+    await client.connect()
     await client.download_company_facts(file_path='../data/companyfacts.zip')
-    await client.download_filing_history(file_path='../data/submissions.zip')
     await client.close()
 
 
