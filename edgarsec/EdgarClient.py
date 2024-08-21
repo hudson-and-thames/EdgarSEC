@@ -1,18 +1,20 @@
 import json
-from typing import Dict, Any, Optional, LiteralString, Literal
+import logging
+from pathlib import Path
+from typing import Dict, Any, Optional, Literal
+
 import aiofiles
+import aiohttp
 from aiohttp import ClientSession, TCPConnector, ClientTimeout
 from ratelimit import limits, sleep_and_retry
 from tqdm import tqdm
-from edgarsec.models import CIK, Period
-import logging
-from edgarsec.errors import RequestFailedException, InvalidCIKException
-from edgarsec.utils import _download_file, _unzip_file
-from pathlib import Path
-import aiohttp
 
+from edgarsec.errors import RequestFailedException, InvalidCIKException
+from edgarsec.models import CIK, Period
+from edgarsec.utils import _unzip_file
 
 type taxonomies = Literal["us-gaap", "ifrs-full", "dei", "srt"]
+
 
 class EdgarClient:
     DATA_URL = "https://data.sec.gov"
@@ -129,7 +131,7 @@ class EdgarClient:
 
         return response
 
-    async def get_frames(self, period: str, taxonomy: taxonomies, tag:str, currency:str) -> Dict[str, Any]:
+    async def get_frames(self, period: str, taxonomy: taxonomies, tag: str, currency: str) -> Dict[str, Any]:
         period_obj = Period(period)
         try:
             period_obj.is_valid()
